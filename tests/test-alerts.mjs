@@ -65,3 +65,62 @@ test('no startup, repeated idle/blocked, working, or replacement alerts', () => 
   assert.equal(events([agent('idle')], [agent('working')]).length, 0);
   assert.equal(events([agent('working')], [{ ...agent('done'), terminal_id: 'replacement' }]).length, 0);
 });
+
+function unreadContext() {
+  const source = readFileSync(new URL('../HerdrHud.qml', import.meta.url), 'utf8');
+  const context = vm.createContext({
+    Alerts: alerts, demoMode: false, alertBaseline: false, agents: [], unread: {},
+    lastSequence: {}, workingSince: {}, opened: false, selectedPane: '',
+    activeAlert: null, activeAlertNeedsInput: false, connected: false, errorText: '',
+    dataRevision: 0,
+    agentForPane(pane) {
+      for (const item of context.agents) if (String(item.pane_id || '') === pane) return item;
+      return null;
+    },
+    selectAgent(pane) {
+      context.selectedPane = pane;
+      const next = { ...context.unread };
+      delete next[pane];
+      context.unread = next;
+    },
+    queueAlert() {}, clearAlerts() { context.activeAlert = null; }, showNextAlert() {},
+  });
+  context.root = context;
+  for (const name of ['stateSequence', 'isUnreadTransition', 'cloneObject', 'applyRoster']) {
+    const start = source.indexOf(`  function ${name}(`);
+    vm.runInContext(source.slice(start, source.indexOf('\n  }', start) + 4), context);
+  }
+  return context;
+}
+
+const unreadRow = (status, stateChangeSeq, revision, pane = 'p', terminal = 't') => ({
+  pane_id: pane, terminal_id: terminal, agent_status: status,
+  state_change_seq: stateChangeSeq, revision,
+});
+
+test('unread never falls back to the churning revision counter', () => {
+  const hud = unreadContext();
+  const poll = rows => hud.applyRoster(JSON.stringify({ agents: rows }), '', 0);
+  poll([unreadRow('working', 0, 1)]);
+  poll([unreadRow('blocked', 0, 2)]);
+  assert.equal(hud.unread.p, true, 'blocking is an unseen update');
+  hud.selectAgent('p');
+  assert.notEqual(hud.unread.p, true, 'selecting clears the badge');
+  for (let revision = 3; revision < 8; revision++) poll([unreadRow('blocked', 0, revision)]);
+  assert.notEqual(hud.unread.p, true, 'revision churn must not resurrect the badge');
+  for (let sequence = 1; sequence < 4; sequence++) poll([unreadRow('blocked', sequence, 8)]);
+  assert.notEqual(hud.unread.p, true, 'a same-status sequence bump must not resurrect the badge');
+});
+
+test('unread uses state transitions and ignores sequence resets and seen bookkeeping', () => {
+  const hud = unreadContext();
+  const poll = rows => hud.applyRoster(JSON.stringify({ agents: rows }), '', 0);
+  poll([unreadRow('blocked', 10, 1)]);
+  poll([unreadRow('idle', 3, 1)]);
+  assert.notEqual(hud.unread.p, true, 'a sequence reset after restart is not a new update');
+  poll([unreadRow('done', 4, 1)]);
+  assert.notEqual(hud.unread.p, true, 'idle/done seen bookkeeping stays read');
+  poll([unreadRow('working', 5, 1)]);
+  poll([unreadRow('idle', 6, 1)]);
+  assert.equal(hud.unread.p, true, 'finishing a turn is an unseen update');
+});

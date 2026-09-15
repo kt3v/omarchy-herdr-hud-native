@@ -364,6 +364,28 @@ Item {
     return "Status unknown"
   }
 
+  // Herdr serializes state_change_seq as 0 when a terminal has no recorded state
+  // change yet. Treat 0/absent as "no sequence" instead of falling back to the
+  // churning revision counter, which would keep re-flagging unread forever.
+  function stateSequence(row) {
+    var value = Number(row ? row.state_change_seq : NaN)
+    return isFinite(value) && value > 0 ? value : null
+  }
+
+  function isUnreadTransition(previous, row, previousSequence, sequence) {
+    if (!previous || previous.terminal_id !== row.terminal_id) return false
+    var status = String(row.agent_status || "")
+    var previousStatus = String(previous.agent_status || "")
+    if (previousStatus === "working" && status !== "working") return true
+    if (status === "blocked" && previousStatus !== "blocked") return true
+    if (status === previousStatus) return false
+    if (sequence === null || previousSequence === undefined || sequence <= previousSequence) return false
+    // Ignore Herdr's idle/done seen-state bookkeeping so reading an agent
+    // elsewhere does not resurrect the unread badge.
+    if ((status === "idle" || status === "done") && (previousStatus === "idle" || previousStatus === "done")) return false
+    return true
+  }
+
   function workingElapsed() {
     var agent = agentForPane(selectedPane)
     var started = agent ? workingSince[String(agent.terminal_id || agent.pane_id)] : undefined
@@ -480,18 +502,22 @@ Item {
       var nextSequence = ({})
       var nextWorkingSince = ({})
       var live = ({})
+      var previousByPane = ({})
+      for (var p = 0; p < agents.length; p++) previousByPane[String(agents[p].pane_id || "")] = agents[p]
       for (var i = 0; i < rows.length; i++) {
         var row = rows[i]
         var pane = String(row.pane_id || "")
-        var sequence = Number(row.state_change_seq || row.revision || 0)
-        if (row.agent_status === "working") {
+        var status = String(row.agent_status || "")
+        var sequence = stateSequence(row)
+        var previousSequence = lastSequence[pane]
+        if (status === "working") {
           var identity = String(row.terminal_id || pane)
           nextWorkingSince[identity] = workingSince[identity] || Date.now()
         }
         live[pane] = true
-        nextSequence[pane] = sequence
-        if (row.agent_status === "working" || (opened && pane === selectedPane)) delete nextUnread[pane]
-        else if (lastSequence[pane] !== undefined && lastSequence[pane] !== sequence) nextUnread[pane] = true
+        nextSequence[pane] = sequence === null ? (previousSequence === undefined ? 0 : previousSequence) : sequence
+        if (status === "working" || (opened && pane === selectedPane)) delete nextUnread[pane]
+        else if (isUnreadTransition(previousByPane[pane], row, previousSequence, sequence)) nextUnread[pane] = true
       }
       for (var unreadPane in nextUnread) if (!live[unreadPane]) delete nextUnread[unreadPane]
       var previousAgent = agentForPane(selectedPane)
