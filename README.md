@@ -10,7 +10,7 @@ Omarchy-only HUD plugin with native terminal input for Herdr agents.
 
 ## Installation
 
-After the public release is available, install through Omarchy:
+Install through Omarchy:
 
 ```bash
 omarchy pkg add qmltermwidget
@@ -44,4 +44,4 @@ Live acceptance requires a Wayland session and Herdr. It creates disposable fixt
 
 The retained HUD code is MIT-licensed; see `LICENSE`. The launcher, designs, roster, and alert behavior derive from Alex Finn's `finna/omarchy-herdr-hud`; the original copyright notice is preserved.
 
-QMLTermWidget is a separately installed GPL dependency, not MIT code, and no dependency sources or binaries are bundled. See `RELEASE_STATUS.md` for the outstanding distribution-license review. Do not interpret the MIT manifest as licensing the combined runtime under MIT.
+MIT applies to this repository's own source files only, not to its runtime dependencies or an entire combined distribution. Dependency sources and binaries are not bundled. See [LICENSES.md](LICENSES.md) for dependency attribution, reviewed version information, and distribution scope.

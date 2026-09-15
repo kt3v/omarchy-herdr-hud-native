@@ -1,26 +1,20 @@
 # Release status
 
-Target repository: `kt3v/omarchy-herdr-hud-native` (public).
-Plugin ID: `indie.herdr-hud`. Planned version: `0.1.0`.
+Repository: `kt3v/omarchy-herdr-hud-native` (public).
+Plugin ID: `indie.herdr-hud`. Version: `0.1.0`.
 
-## Verified locally
+## Acceptance
 
 - Standalone runtime and tests; no original checkout or PoC required.
-- Eleven Python tests, both JavaScript test files, and Omarchy manifest validation passed.
+- Eleven Python tests, both JavaScript test files, and Omarchy manifest validation passed during release preparation.
 - Full-panel live acceptance passed using two owned disposable fixture panes.
+- The user confirmed installation through the documented Omarchy commands on another PC and confirmed functionality.
 - Basic filename and content scan found no credentials or user transcripts.
 - Original MIT notice retained. No dependency implementation or binaries included.
-- Public repository created and initial source commit pushed to `main` on September 15, 2026. No release tag published.
+- Dependency review findings and distribution scope are documented in `LICENSES.md`; this is not a legal opinion or a guarantee for downstream combined distributions.
 
-## Remaining gates
+## Deferred
 
-- Resolve distribution obligations for the in-process QMLTermWidget dependency before public release. The installed Arch package identifies GPL-2.0-only. Upstream license contents have not yet been verified. Review the exact installed source revision and its file headers rather than assuming that separate installation removes GPL obligations.
-- Verify Omarchy Git-based installation without overwriting the active snapshot or enabling two HUDs.
-- Publish the agreed release after installation verification.
+- Additional screenshots and expanded troubleshooting documentation are deferred by agreement with the user.
 
-Source references for the license review:
-
-- https://github.com/Swordfish90/qmltermwidget
-- https://www.gnu.org/licenses/gpl-faq.html#GPLAndPlugins
-
-The current local directory is temporary. Preserve it in a permanent development directory before relying on it as the release source.
+GitHub tags and Releases are the authoritative record of publication.
