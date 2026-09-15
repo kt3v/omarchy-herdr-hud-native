@@ -81,6 +81,12 @@ Item {
   readonly property color urgent: wowMode ? "#db6555" : Color.urgent
   readonly property color success: wowMode ? "#66bd69" : accent
   readonly property color working: wowMode ? "#d5ad55" : accent
+  // Herdr's semantic agent states, so the roster marks read like Herdr's own
+  // status glyphs instead of collapsing blocked/done/idle into one color.
+  readonly property color statusBlocked: wowMode ? "#db6555" : "#c9543f"
+  readonly property color statusWorking: wowMode ? "#d5ad55" : "#c29327"
+  readonly property color statusDone: wowMode ? "#5fb3a1" : "#3f9e8c"
+  readonly property color statusIdle: wowMode ? "#66bd69" : "#5aa05e"
   readonly property color muted: Qt.tint(alpha(background, 1), alpha(foreground, 0.62))
   readonly property color panelFill: background
   readonly property var panelBorderSpec: wowMode ? Border.flat("#80613a", 2) : Border.surfaceSpec("popups", "border", accent, 2)
@@ -393,11 +399,32 @@ Item {
     return (seconds < 60 ? seconds + "s" : Math.floor(seconds / 60) + "m " + seconds % 60 + "s") + "+"
   }
 
+  function statusKey(agent) {
+    if (!agent) return "unknown"
+    var status = String(agent.agent_status || "")
+    if (status === "blocked") return "blocked"
+    if (status === "working") return "working"
+    if (isReady(agent)) return unread[String(agent.pane_id || "")] ? "done" : "idle"
+    return "unknown"
+  }
+
+  // Mirrors Herdr's distinct "symbols" indicator style (src/ui/status.rs):
+  // blocked ×, working ◐, done ✓, idle ○, unknown ·.
+  function statusSymbol(agent) {
+    var key = statusKey(agent)
+    if (key === "blocked") return "\u00d7"
+    if (key === "working") return "\u25d0"
+    if (key === "done") return "\u2713"
+    if (key === "idle") return "\u25cb"
+    return "\u00b7"
+  }
+
   function statusColor(agent) {
-    if (!agent) return muted
-    var pane = String(agent.pane_id || "")
-    if (unread[pane] || isReady(agent) || agent.agent_status === "blocked") return success
-    if (String(agent.agent_status || "") === "working") return working
+    var key = statusKey(agent)
+    if (key === "blocked") return statusBlocked
+    if (key === "working") return statusWorking
+    if (key === "done") return statusDone
+    if (key === "idle") return statusIdle
     return muted
   }
 
@@ -405,11 +432,6 @@ Item {
     if (!agent) return "Agent"
     var type = String(agent.agent || "agent")
     return type.charAt(0).toUpperCase() + type.slice(1)
-  }
-
-  function tabName(agent) {
-    var label = String(agent ? agent.tab_label || "" : "")
-    return /^\d+$/.test(label) ? "Tab " + label : label
   }
 
   function attentionCount() {
@@ -896,7 +918,7 @@ Item {
                       required property var modelData
                       ToolTip.visible: agentMouse.containsMouse
                       ToolTip.delay: 700
-                      ToolTip.text: root.tabName(modelData) + " · " + root.agentName(modelData) + " · " + String(modelData.pane_id || "")
+                      ToolTip.text: root.agentName(modelData) + " · " + String(modelData.pane_id || "")
 
                       width: ListView.view.width
                       height: 86
@@ -927,13 +949,16 @@ Item {
                         anchors.margins: 10
                         spacing: 9
 
-                        Rectangle {
+                        Text {
                           Layout.alignment: Qt.AlignTop
-                          Layout.topMargin: 4
-                          width: 10
-                          height: 10
-                          radius: root.wowMode ? 5 : 0
+                          Layout.topMargin: 2
+                          Layout.preferredWidth: 12
+                          horizontalAlignment: Text.AlignHCenter
+                          text: root.statusSymbol(agentRow.modelData)
                           color: root.statusColor(agentRow.modelData)
+                          font.family: root.chromeFont
+                          font.pixelSize: 14
+                          font.bold: root.wowMode
                         }
 
                         ColumnLayout {
@@ -951,7 +976,7 @@ Item {
                           }
                           Text {
                             Layout.fillWidth: true
-                            text: (root.tabName(agentRow.modelData) || String(agentRow.modelData.pane_id || "")) + " · " + root.agentName(agentRow.modelData)
+                            text: root.agentName(agentRow.modelData)
                             color: root.muted
                             font.family: root.chromeFont
                             font.pixelSize: 12
