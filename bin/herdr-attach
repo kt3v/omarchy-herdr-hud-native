@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Replace this process with Herdr attach; never fall back to a shell."""
+import os
+import re
+import shutil
+import sys
+
+def main(argv):
+    if len(argv) != 2 or not re.fullmatch(r"term_[A-Za-z0-9_-]+", argv[1]):
+        raise ValueError("An explicit Herdr terminal ID is required")
+    executable = shutil.which("herdr")
+    if not executable:
+        raise ValueError("Herdr is not installed or not on PATH")
+    os.execv(executable, [executable, "terminal", "attach", argv[1]])
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv)
+    except (ValueError, OSError) as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(1)

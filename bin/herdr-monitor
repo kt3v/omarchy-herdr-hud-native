@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Bounded read-only Herdr metadata for the Omarchy HUD."""
+import ctypes
+import json
+import os
+import re
+import selectors
+import signal
+import shutil
+import subprocess
+import sys
+import time
+from typing import Any
+
+TIMEOUT = 12
+STDOUT_LIMIT = 1024 * 1024
+STDERR_LIMIT = 64 * 1024
+ERROR_LIMIT = 4096
+RESPONSE_LIMIT = 8 * 1024 * 1024
+
+class BridgeError(RuntimeError):
+    pass
+
+def run(argv: list[str], timeout: float = TIMEOUT) -> str:
+    # Linux subreaper: orphaned grandchildren in this command's process group
+    # become our children, so timeout cleanup can reap them as well as the leader.
+    if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+        raise BridgeError("Could not enable command process cleanup")
+    try:
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    except FileNotFoundError as error:
+        raise BridgeError(f"{argv[0]} is not installed") from error
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    deadline = time.monotonic() + timeout
+    try:
+        with selectors.DefaultSelector() as selector:
+            for stream, name in [(process.stdout, "stdout"), (process.stderr, "stderr")]:
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, name)
+            while selector.get_map() or process.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise BridgeError(f"{argv[0]} did not respond in time")
+                for key, _ in selector.select(min(remaining, 0.05)):
+                    stream, name = key.fileobj, key.data
+                    limit = STDOUT_LIMIT if name == "stdout" else STDERR_LIMIT
+                    chunk = os.read(stream.fileno(), min(16384, limit - len(buffers[name]) + 1))
+                    if not chunk:
+                        selector.unregister(stream)
+                        stream.close()
+                    elif len(buffers[name]) + len(chunk) > limit:
+                        raise BridgeError(f"Command {name} exceeded the {limit}-byte limit")
+                    else:
+                        buffers[name].extend(chunk)
+        if process.returncode:
+            detail = (buffers["stderr"] or buffers["stdout"])[:ERROR_LIMIT].decode("utf-8", errors="replace").strip()
+            raise BridgeError(detail or f"{argv[0]} exited with status {process.returncode}")
+        return buffers["stdout"].decode("utf-8", errors="replace")
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+        while True:
+            try:
+                os.waitpid(-process.pid, 0)
+            except ChildProcessError:
+                break
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+
+def herdr(*args: str) -> str:
+    executable = shutil.which("herdr")
+    if not executable:
+        raise BridgeError("Herdr is not installed or not on PATH")
+    return run([executable, *args])
+
+def response(payload: Any) -> None:
+    encoded = json.dumps(payload, ensure_ascii=False)
+    if len(encoded.encode()) > RESPONSE_LIMIT:
+        raise BridgeError("HUD response exceeded the byte limit")
+    print(encoded)
+
+
+def agents() -> list[dict[str, Any]]:
+    payload = json.loads(herdr("agent", "list"))
+    return payload.get("result", {}).get("agents", [])
+
+
+def roster() -> None:
+    rows = agents()
+    workspace_payload = json.loads(herdr("workspace", "list"))
+    spaces = workspace_payload.get("result", {}).get("workspaces", [])
+    tabs = json.loads(herdr("tab", "list")).get("result", {}).get("tabs", [])
+    tab_labels = {str(tab.get("tab_id", "")): str(tab.get("label") or tab.get("number") or tab.get("tab_id", "")) for tab in tabs}
+    labels = {
+        str(space.get("workspace_id", "")): (
+            space.get("label") or space.get("workspace_id") or "Untitled space"
+        )
+        for space in spaces
+    }
+    merged = []
+    for row in rows:
+        item = dict(row)
+        workspace_id = str(item.get("workspace_id", ""))
+        item["workspace_label"] = labels.get(workspace_id, workspace_id or "Untitled space")
+        item["tab_label"] = tab_labels.get(str(row.get("tab_id", "")), str(row.get("tab_id") or ""))
+        merged.append(item)
+    response({"ok": True, "agents": merged})
+
+
+def focused_screen() -> None:
+    monitors = json.loads(run(["hyprctl", "monitors", "-j"], timeout=3))
+    focused = next((monitor for monitor in monitors if monitor.get("focused")), None)
+    if focused is None and monitors:
+        focused = monitors[0]
+    response({"ok": True, "screen": (focused or {}).get("name", "")})
+
+
+def preview(pane_id: str, terminal_id: str) -> None:
+    def matches():
+        return any(row.get("pane_id") == pane_id and row.get("terminal_id") == terminal_id for row in agents())
+    if pane_id.startswith("-") or not re.fullmatch(r"term_[A-Za-z0-9_-]+", terminal_id) or not matches():
+        raise BridgeError("The selected agent changed")
+    text = herdr("agent", "read", pane_id, "--source", "recent-unwrapped", "--lines", "12")
+    if not matches():
+        raise BridgeError("The selected agent changed")
+    response({"preview": text.strip()[-600:]})
+
+def main(argv: list[str]) -> int:
+    if argv[1:] == ["roster"]:
+        roster()
+    elif argv[1:] == ["focused-screen"]:
+        focused_screen()
+    elif len(argv) == 4 and argv[1] == "preview":
+        preview(argv[2], argv[3])
+    else:
+        raise BridgeError("usage: herdr-monitor roster|focused-screen|preview PANE TERMINAL")
+    return 0
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv))
+    except (BridgeError, OSError, ValueError, TypeError, AttributeError) as error:
+        print(str(error)[:ERROR_LIMIT], file=sys.stderr)
+        raise SystemExit(1)

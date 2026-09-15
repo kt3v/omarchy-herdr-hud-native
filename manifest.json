@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "indie.herdr-hud",
+  "name": "Herdr HUD Native",
+  "version": "0.1.0",
+  "author": "indie",
+  "license": "MIT",
+  "description": "Omarchy gaming HUD with native Herdr terminal input and agent notifications.",
+  "kinds": [
+    "panel"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "HerdrHud.qml"
+  }
+}
