@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Dev helper: reload the Omarchy shell plugin after source changes.
+set -euo pipefail
+
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+events=close_write,create,delete,move
+
+command -v inotifywait >/dev/null 2>&1 || {
+  echo "dev-watch: inotifywait not found (install inotify-tools)" >&2
+  exit 1
+}
+
+matches_source() {
+  case "$1" in
+  *.qml | *.js | */manifest.json | */qmldir) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
+echo "Watching $repo_dir - Ctrl-C to stop."
+
+while IFS= read -r path; do
+  matches_source "$path" || continue
+  # Coalesce the burst of events one save produces before reloading once.
+  while inotifywait --quiet --recursive --timeout 0.25 \
+    --event "$events" "$repo_dir" >/dev/null 2>&1; do :; done
+  echo "reload: ${path#"$repo_dir"/}"
+  omarchy-shell -q shell rescanPlugins || echo "dev-watch: reload failed" >&2
+done < <(inotifywait --monitor --recursive --quiet --format '%w%f' \
+  --event "$events" "$repo_dir")
