@@ -22,6 +22,7 @@ Do not enable another Herdr HUD at the same time. The plugin stores its settings
 ## Features
 
 - Native VT terminal attached to the selected Herdr agent
+- Shift+drag selects terminal text; releasing the mouse copies it to the clipboard and clears the highlight
 - Approval-dialog keyboard input and TUI rendering
 - Omarchy and WoW designs
 - Agent switching, launcher, alerts, hidden-panel notifications
@@ -30,6 +31,20 @@ Do not enable another Herdr HUD at the same time. The plugin stores its settings
 The plugin supports Omarchy only. It does not provide an HTML renderer, prompt bridge, legacy plugin migration, or independent chat history. Herdr owns terminal controller, resize, scroll, and alternate-screen behavior.
 
 ## Development
+
+This checkout can be symlinked into `~/.config/omarchy/plugins/indie.herdr-hud`.
+Edit the checkout, not a separate installed copy. Run `bin/dev-watch` in a
+desktop terminal and leave it running. It watches QML, JavaScript, `manifest.json`,
+and `qmldir`, groups save bursts, and restarts Omarchy shell once per burst.
+Only one watcher can run for the checkout. Stop it with Ctrl-C.
+
+The installed shell's `rescanPlugins` can retain cached QML, so the development
+watcher deliberately uses `omarchy restart shell`. This briefly restarts all shell
+UI and closes the HUD; it does not stop Herdr agents. Reopen the HUD afterwards.
+For a manual refresh, run `omarchy restart shell`. Do not use `omarchy-shell -q`
+to verify a reload: quiet mode reports success even when IPC fails.
+Changes under `bin/` take effect on the next process start; restart `bin/dev-watch`
+itself after editing the watcher. Run shell commands outside an isolated sandbox.
 
 ```bash
 python3 -m unittest discover -s tests -v

@@ -18,6 +18,13 @@ Item {
   readonly property alias terminal: terminalLoader.item
   readonly property bool clientRunning: !!terminal && terminal.clientRunning
 
+  function toggleConnection() {
+    if (clientRunning) {
+      paused = true
+      reconcile()
+    } else reconnect()
+  }
+
   function focusTerminal() {
     if (terminal) terminal.focusTerminal()
   }
@@ -67,29 +74,6 @@ Item {
   }
   Component.onCompleted: Qt.callLater(reconcile)
 
-  component TerminalButton: Button {
-    id: control
-    focusPolicy: Qt.NoFocus
-    implicitHeight: 28
-    implicitWidth: Math.max(64, label.implicitWidth + 20)
-    opacity: enabled ? 1 : 0.45
-    background: Rectangle {
-      color: Qt.tint(root.background, Qt.rgba(root.accent.r, root.accent.g, root.accent.b, control.hovered ? 0.18 : 0.08))
-      border.width: 1
-      border.color: root.accent
-      radius: root.wowMode ? 3 : 0
-    }
-    contentItem: Text {
-      id: label
-      text: control.text
-      color: root.foreground
-      font.family: root.chromeFont
-      font.pixelSize: 12
-      horizontalAlignment: Text.AlignHCenter
-      verticalAlignment: Text.AlignVCenter
-    }
-  }
-
   ColumnLayout {
     anchors.fill: parent
     spacing: 4
@@ -116,33 +100,15 @@ Item {
     }
     RowLayout {
       Layout.fillWidth: true
-      TerminalButton {
-        text: "Copy"
-        enabled: !!root.terminal
-        onClicked: {
-          root.terminal.terminalItem.copyClipboard()
-          root.focusTerminal()
-        }
-      }
-      TerminalButton {
-        text: root.clientRunning ? "Disconnect" : "Reconnect"
-        enabled: !!root.target && !root.stopping
-        onClicked: {
-          if (root.clientRunning) {
-            root.paused = true
-            root.reconcile()
-          } else root.reconnect()
-        }
-      }
       Text {
         Layout.fillWidth: true
-        text: root.clientRunning && !root.stopping ? "Live input · Esc goes to agent" : root.message
+        text: root.clientRunning && !root.stopping ? "Shift+drag to select & copy · Esc goes to agent" : root.message
         color: root.muted
         font.family: root.chromeFont
         font.pixelSize: 11
         elide: Text.ElideRight
         ToolTip.visible: hintHover.hovered
-        ToolTip.text: "Input, including paste and Enter, may approve agent actions. Shift+drag selects text. Ctrl+B then Q detaches. No automatic takeover."
+        ToolTip.text: "Input, including paste and Enter, may approve agent actions. Shift+drag selects text and copies it to the clipboard on release. Ctrl+B then Q detaches. No automatic takeover."
         HoverHandler { id: hintHover }
       }
     }

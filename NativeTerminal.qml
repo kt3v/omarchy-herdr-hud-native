@@ -10,9 +10,28 @@ Item {
   property bool stopping: false
   property bool started: false
   property bool inputEnabled: true
+  property bool selecting: false
+  property bool clearingSelection: false
   property alias terminalItem: terminal
   property alias terminalSession: session
   signal ended()
+
+  function copyAndClearSelection() {
+    if (selecting || stopping) return
+    terminal.copyClipboard()
+    selectionReset.restart()
+  }
+
+  function clearSelection() {
+    if (selecting || stopping) return
+    clearingSelection = true
+    try {
+      terminal.simulateMousePress(1, 1, Qt.LeftButton, Qt.LeftButton, Qt.ShiftModifier)
+      terminal.simulateMouseRelease(1, 1, Qt.LeftButton, Qt.NoButton, Qt.ShiftModifier)
+    } finally {
+      clearingSelection = false
+    }
+  }
 
   function focusTerminal() {
     if (!stopping && clientRunning) terminal.forceActiveFocus()
@@ -44,6 +63,12 @@ Item {
     font.family: "monospace"
     font.pointSize: 10
     colorScheme: "cool-retro-term"
+    onIsBusySelecting: busy => {
+      if (root.clearingSelection) return
+      root.selecting = busy
+      if (busy) selectionReset.stop()
+      if (!busy) Qt.callLater(root.copyAndClearSelection)
+    }
     session: QMLTermSession {
       id: session
       shellProgram: "/usr/bin/env"
@@ -59,6 +84,12 @@ Item {
         root.ended()
       }
     }
+  }
+
+  Timer {
+    id: selectionReset
+    interval: Qt.styleHints.mouseDoubleClickInterval + 1
+    onTriggered: root.clearSelection()
   }
 
   Timer {

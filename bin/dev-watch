@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dev helper: reload the Omarchy shell plugin after source changes.
+# Dev helper: restart the Omarchy shell after source changes.
 set -euo pipefail
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -10,6 +10,14 @@ command -v inotifywait >/dev/null 2>&1 || {
   exit 1
 }
 
+exec 9<"$repo_dir/bin/dev-watch"
+flock --nonblock 9 || {
+  echo "dev-watch: another watcher is already running" >&2
+  exit 1
+}
+
+omarchy-shell shell ping >/dev/null
+
 matches_source() {
   case "$1" in
   *.qml | *.js | */manifest.json | */qmldir) return 0 ;;
@@ -17,14 +25,30 @@ matches_source() {
   esac
 }
 
-echo "Watching $repo_dir - Ctrl-C to stop."
+echo "Watching $repo_dir - restarts Omarchy shell after saves; Ctrl-C to stop."
 
-while IFS= read -r path; do
+coproc source_events {
+  exec inotifywait --monitor --recursive --quiet --format '%w%f' \
+    --exclude '/(\.git|\.agents|\.codex|__pycache__)/' \
+    --event "$events" "$repo_dir"
+}
+watch_pid=$source_events_PID
+exec {event_fd}<&"${source_events[0]}"
+trap 'kill "$watch_pid" 2>/dev/null || true; wait "$watch_pid" 2>/dev/null || true' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+while IFS= read -r -u "$event_fd" path; do
   matches_source "$path" || continue
-  # Coalesce the burst of events one save produces before reloading once.
-  while inotifywait --quiet --recursive --timeout 0.25 \
-    --event "$events" "$repo_dir" >/dev/null 2>&1; do :; done
-  echo "reload: ${path#"$repo_dir"/}"
-  omarchy-shell -q shell rescanPlugins || echo "dev-watch: reload failed" >&2
-done < <(inotifywait --monitor --recursive --quiet --format '%w%f' \
-  --event "$events" "$repo_dir")
+  while IFS= read -r -t 0.5 -u "$event_fd" next_path; do
+    if matches_source "$next_path"; then path=$next_path; fi
+  done
+  echo "restart: ${path#"$repo_dir"/}"
+  if omarchy restart shell; then
+    echo "dev-watch: shell restarted"
+  else
+    echo "dev-watch: shell restart failed" >&2
+  fi
+done
+echo "dev-watch: file watcher stopped unexpectedly" >&2
+exit 1

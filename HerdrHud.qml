@@ -793,7 +793,33 @@ Item {
                 font.family: root.chromeFont
                 font.pixelSize: 13
                 font.bold: true
-                Layout.rightMargin: 8
+                Layout.fillWidth: false
+                Layout.maximumWidth: 160
+                elide: Text.ElideRight
+              }
+              Button {
+                id: disconnectTerminalButton
+                text: terminalPane.clientRunning ? "Disconnect" : "Reconnect"
+                enabled: !!terminalPane.target && !terminalPane.stopping
+                focusPolicy: Qt.NoFocus
+                Layout.preferredWidth: 104
+                Layout.fillHeight: true
+                hoverEnabled: true
+                onClicked: terminalPane.toggleConnection()
+                background: Rectangle {
+                  radius: root.cornerRadius
+                  color: root.alpha(root.accent, disconnectTerminalButton.hovered ? 0.18 : 0.08)
+                  border.width: 1
+                  border.color: root.alpha(root.accent, 0.5)
+                }
+                contentItem: Text {
+                  text: disconnectTerminalButton.text
+                  color: root.accent
+                  font.family: root.chromeFont
+                  font.pixelSize: 12
+                  horizontalAlignment: Text.AlignHCenter
+                  verticalAlignment: Text.AlignVCenter
+                }
               }
             }
           }

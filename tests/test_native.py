@@ -152,6 +152,18 @@ class NativeTests(unittest.TestCase):
         self.assertIn('shellProgram: "/usr/bin/env"', source)
         self.assertIn('"python3"', source)
 
+    def test_terminal_copies_on_selection_release(self):
+        source = (NATIVE / "NativeTerminal.qml").read_text()
+        self.assertIn("onIsBusySelecting: busy =>", source)
+        self.assertIn("if (!busy) Qt.callLater(root.copyAndClearSelection)", source)
+        pane = (NATIVE / "TerminalPane.qml").read_text()
+        self.assertIn("Shift+drag to select & copy", pane)
+        self.assertNotIn("function copySelection()", pane)
+        self.assertIn("function toggleConnection()", pane)
+        hud = (NATIVE / "HerdrHud.qml").read_text()
+        self.assertNotIn('text: "Copy"', hud)
+        self.assertIn('text: terminalPane.clientRunning ? "Disconnect" : "Reconnect"', hud)
+
     @unittest.skipUnless(shutil.which("quickshell") and SHELL.exists(), "Omarchy is required")
     def test_qml_compilation(self):
         with tempfile.TemporaryDirectory(prefix="herdr-native-qml-") as directory:
@@ -165,11 +177,23 @@ Scope {
   Timer {
     interval: 100; running: true
     onTriggered: {
-      var names = ["TerminalPane.qml", "HerdrHud.qml"]
+      var names = ["NativeTerminal.qml", "TerminalPane.qml", "HerdrHud.qml"]
       for (var index = 0; index < names.length; index++) {
         var component = Qt.createComponent("native/" + names[index])
         if (component.status !== Component.Ready && !component.errorString().includes("No PanelWindow backend loaded")) {
           console.error("NATIVE_FAIL", component.errorString()); Qt.quit(); return
+        }
+        if (names[index] === "NativeTerminal.qml" && component.status === Component.Ready) {
+          var terminal = component.createObject(null, {terminalTarget: "term_test"})
+          if (!terminal) { console.error("NATIVE_FAIL", component.errorString()); Qt.quit(); return }
+          try {
+            terminal.copyAndClearSelection()
+            terminal.clearSelection()
+            if (terminal.clearingSelection || terminal.selecting) throw new Error("Selection reset remained active")
+          } catch (error) {
+            console.error("NATIVE_FAIL", error); Qt.quit(); return
+          }
+          terminal.destroy()
         }
       }
       console.log("NATIVE_COMPILE_PASS")
