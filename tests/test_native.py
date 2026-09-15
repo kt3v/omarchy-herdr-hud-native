@@ -54,6 +54,48 @@ class NativeTests(unittest.TestCase):
             with self.assertRaisesRegex(monitor.BridgeError, "changed"):
                 monitor.preview("w1:p1", "term_safe")
 
+    def test_notification_preview_rejects_tui_snapshots(self):
+        monitor = module("herdr-monitor")
+        for text in (
+            "pSeek V4.1 Flash · 11.9s\n┃\n│\n~/Projects/omarchy-herdr-hud-native:\n│ Build · DeepSeek V4.1 Flash OpenCode Go ·\nhigh",
+            "Build · DeepSeek V4.1 Flash OpenCode Go · high",
+            "Finished\nesc to interrupt",
+            "\x1b[31mFinished\x1b[0m",
+            "Finished\n└──────────",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(monitor.notification_preview(text), "")
+
+    def test_notification_preview_preserves_plain_text_and_its_end(self):
+        monitor = module("herdr-monitor")
+        self.assertEqual(monitor.notification_preview("\nИсправлено.\nТесты проходят.\n"), "Исправлено.\nТесты проходят.")
+        self.assertEqual(monitor.notification_preview("   "), "")
+        text = "Earlier output: " + "result " * 100 + "Latest: tests pass."
+        preview = monitor.notification_preview(text)
+        self.assertEqual(preview, "…" + text[-599:].lstrip())
+        self.assertTrue(preview.endswith("Latest: tests pass."))
+        self.assertLessEqual(len(preview), 600)
+
+    def test_notification_preview_preserves_prose_and_unicode(self):
+        monitor = module("herdr-monitor")
+        for text in (
+            "Progress: ███░ 75%",
+            "The menu contains Build • and Plan • options.",
+            "Press ctrl+c to cancel the command.",
+            "ctrl+c to cancel",
+            "Use │ to separate columns.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(monitor.notification_preview(text), text)
+
+    def test_preview_returns_empty_for_tui_to_keep_hud_fallback(self):
+        monitor = module("herdr-monitor")
+        agent = {"pane_id": "w1:p1", "terminal_id": "term_safe"}
+        output = io.StringIO()
+        with patch.object(monitor, "agents", return_value=[agent]), patch.object(monitor, "herdr", return_value="│ Build · DeepSeek"), contextlib.redirect_stdout(output):
+            monitor.preview("w1:p1", "term_safe")
+        self.assertEqual(json.loads(output.getvalue()), {"preview": ""})
+
     def test_read_only_roster(self):
         monitor = module("herdr-monitor")
         payloads = [{"result": {"agents": [{"pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "t1"}]}},

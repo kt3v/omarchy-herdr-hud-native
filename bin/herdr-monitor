@@ -121,6 +121,21 @@ def focused_screen() -> None:
     response({"ok": True, "screen": (focused or {}).get("name", "")})
 
 
+def notification_preview(text: str) -> str:
+    text = text.strip()
+    if re.search(r"[\x00-\x08\x0b-\x1f\x7f]", text):
+        return ""
+    for line in text.splitlines():
+        if re.fullmatch(r"\s*[\u2500-\u257f]+\s*", line):
+            return ""
+        if re.match(r"^\s*[│┃]?\s*(?:Build|Plan)\s*[·•]", line, re.IGNORECASE):
+            return ""
+        if re.fullmatch(r"\s*(?:esc to interrupt|tab to switch agents)\s*", line, re.IGNORECASE):
+            return ""
+    if len(text) > 600:
+        return "…" + text[-599:].lstrip()
+    return text
+
 def preview(pane_id: str, terminal_id: str) -> None:
     def matches():
         return any(row.get("pane_id") == pane_id and row.get("terminal_id") == terminal_id for row in agents())
@@ -129,7 +144,7 @@ def preview(pane_id: str, terminal_id: str) -> None:
     text = herdr("agent", "read", pane_id, "--source", "recent-unwrapped", "--lines", "12")
     if not matches():
         raise BridgeError("The selected agent changed")
-    response({"preview": text.strip()[-600:]})
+    response({"preview": notification_preview(text)})
 
 def main(argv: list[str]) -> int:
     if argv[1:] == ["roster"]:
