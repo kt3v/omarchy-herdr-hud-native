@@ -23,6 +23,7 @@ Do not enable another Herdr HUD at the same time. The plugin stores its settings
 
 - Native VT terminal attached to the selected Herdr agent
 - Shift+drag selects terminal text; releasing the mouse copies it to the clipboard and clears the highlight
+- Ctrl+Shift+V or Shift+Insert pastes the clipboard into the focused terminal; Ctrl+V remains available to terminal applications
 - Approval-dialog keyboard input and TUI rendering
 - Omarchy and WoW designs
 - Agent switching, launcher, alerts, hidden-panel notifications

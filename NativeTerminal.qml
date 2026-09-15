@@ -56,6 +56,12 @@ Item {
   onBackgroundChanged: applyPalette()
   Component.onCompleted: applyPalette()
 
+  Shortcut {
+    sequences: ["Ctrl+Shift+V", "Shift+Insert"]
+    enabled: terminal.activeFocus && root.clientRunning && !root.stopping && root.inputEnabled
+    onActivated: terminal.pasteClipboard()
+  }
+
   QMLTermWidget {
     id: terminal
     anchors.fill: parent

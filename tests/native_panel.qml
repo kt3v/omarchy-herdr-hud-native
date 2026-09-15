@@ -52,6 +52,7 @@ Scope {
     manifest: ({id: "indie.herdr-hud"})
   }
   TestCase { id: keys; name: "NativePanelKeys"; when: false; parent: hud.terminalView }
+  TextEdit { id: clipboardSource; visible: false; text: "PASTE_CHECK" }
   Connections {
     target: root.terminal ? root.terminal.terminalSession : null
     function onMatchFound() { root.searchFound = true }
@@ -78,6 +79,12 @@ Scope {
         if (!root.check(root.terminal.terminalItem.columns > 30 && root.terminal.terminalItem.lines > 5, "panel geometry")) return
         hud.terminalView.focusTerminal()
       } else if (root.step === 2) {
+        clipboardSource.selectAll()
+        clipboardSource.copy()
+        keys.keyClick(Qt.Key_V, Qt.ControlModifier | Qt.ShiftModifier)
+        keys.keyClick(Qt.Key_Return)
+        keys.keyClick(Qt.Key_Insert, Qt.ShiftModifier)
+        keys.keyClick(Qt.Key_Return)
         for (var key of [Qt.Key_1, Qt.Key_2, Qt.Key_3]) {
           keys.keyClick(key)
           keys.keyClick(Qt.Key_Return)
