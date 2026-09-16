@@ -19,6 +19,23 @@ omarchy plugin add https://github.com/kt3v/omarchy-herdr-hud-native.git --enable
 
 Do not enable another Herdr HUD at the same time. The plugin stores its settings in `~/.config/herdr-hud-native/state.json`.
 
+## Removal
+
+Remove the plugin through Omarchy:
+
+```bash
+omarchy plugin remove indie.herdr-hud
+```
+
+This leaves the `qmltermwidget` system package and the settings file in
+`~/.config/herdr-hud-native/state.json` in place. Remove them separately if
+desired:
+
+```bash
+omarchy pkg drop qmltermwidget
+rm -rf ~/.config/herdr-hud-native
+```
+
 ## Features
 
 - Native VT terminal attached to the selected Herdr agent
