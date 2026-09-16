@@ -107,9 +107,6 @@ Item {
         font.family: root.chromeFont
         font.pixelSize: 11
         elide: Text.ElideRight
-        ToolTip.visible: hintHover.hovered
-        ToolTip.text: "Input, including paste and Enter, may approve agent actions. Shift+drag selects text and copies it to the clipboard on release. Ctrl+B then Q detaches. No automatic takeover."
-        HoverHandler { id: hintHover }
       }
     }
   }

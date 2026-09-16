@@ -786,8 +786,6 @@ Item {
                 Layout.fillHeight: true
                 hoverEnabled: true
                 onClicked: root.toggleUiMode()
-                ToolTip.visible: hovered
-                ToolTip.text: root.wowMode ? "Switch to Omarchy theme" : "Switch to World of Warcraft style"
                 background: Rectangle {
                   radius: root.cornerRadius
                   color: modeButton.down ? root.alpha(root.accent, 0.28)
@@ -814,8 +812,6 @@ Item {
                 checkable: true
                 checked: root.alertsEnabled
                 onClicked: root.toggleAlerts()
-                ToolTip.visible: hovered
-                ToolTip.text: "Toggle completion and input-request popups; unread counts stay visible"
                 background: Rectangle {
                   radius: root.cornerRadius
                   color: alertsButton.down ? root.alpha(root.accent, 0.28)
@@ -916,9 +912,6 @@ Item {
                     delegate: Rectangle {
                       id: agentRow
                       required property var modelData
-                      ToolTip.visible: agentMouse.containsMouse
-                      ToolTip.delay: 700
-                      ToolTip.text: root.agentName(modelData) + " · " + String(modelData.pane_id || "")
 
                       width: ListView.view.width
                       height: 86
@@ -1079,9 +1072,6 @@ Item {
                       font.pixelSize: 11
                     }
                   }
-                  HoverHandler { id: activityHover }
-                  ToolTip.visible: activityHover.hovered
-                  ToolTip.text: "Time observed working by HUD. The task may have started earlier."
                 }
 
                 Rectangle {
