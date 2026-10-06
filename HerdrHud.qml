@@ -6,7 +6,6 @@ import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
 import qs.Ui as Ui
-import "Roster.js" as Roster
 import "Alerts.js" as Alerts
 import "."
 
@@ -36,7 +35,10 @@ Item {
   property var agents: []
   property string selectedPane: ""
   property var unread: ({})
-  readonly property var sortedAgents: Roster.sorted(agents, unread)
+  // Keep Herdr's own order (workspace order). Re-sorting by attention moved
+  // agents as soon as they were selected or changed status, which sent
+  // prompts to the wrong agent; status glyphs and badges show attention.
+  readonly property var sortedAgents: agents
   property var lastSequence: ({})
   property var alertQueue: []
   property bool alertsEnabled: true
@@ -55,6 +57,10 @@ Item {
   property string errorText: "Connecting to Herdr…"
   property string noticeText: ""
   property int rosterWidth: 196
+  property int panelWidth: 800
+  property int panelHeight: 590
+  readonly property int minPanelWidth: 560
+  readonly property int minPanelHeight: 380
   property var positions: ({})
   property int stateRevision: 0
   property bool stateReady: false
@@ -182,6 +188,8 @@ Item {
         if (typeof parsed.overlayVisible === "boolean") overlayVisible = parsed.overlayVisible
         if (parsed.positions && typeof parsed.positions === "object") positions = parsed.positions
         if (Number(parsed.rosterWidth) > 0) rosterWidth = clamp(Number(parsed.rosterWidth), 150, 330)
+        if (Number(parsed.panelWidth) > 0) panelWidth = Math.max(minPanelWidth, Number(parsed.panelWidth))
+        if (Number(parsed.panelHeight) > 0) panelHeight = Math.max(minPanelHeight, Number(parsed.panelHeight))
       }
     } catch (error) {
       positions = ({})
@@ -199,7 +207,9 @@ Item {
       launcherStyle: launcherStyle,
       overlayVisible: overlayVisible,
       positions: positions,
-      rosterWidth: Math.round(rosterWidth)
+      rosterWidth: Math.round(rosterWidth),
+      panelWidth: Math.round(panelWidth),
+      panelHeight: Math.round(panelHeight)
     }, null, 2) + "\n")
   }
 
@@ -355,6 +365,54 @@ Item {
       var activeView = viewForScreen(panelScreenName)
       if (activeView) activeView.focusTerminal()
     })
+  }
+
+  // Keyboard agent switching, in the roster's displayed order.
+  function selectRelative(step) {
+    var list = sortedAgents
+    if (!list.length) return
+    var current = -1
+    for (var i = 0; i < list.length; i++) if (String(list[i].pane_id || "") === selectedPane) current = i
+    var next = current < 0 ? 0 : (current + step + list.length) % list.length
+    selectAgent(String(list[next].pane_id || ""))
+  }
+
+  // IPC entry points for Hyprland bindings; open the panel if it is closed.
+  function nextAgent(_arg) { showAgentStep(1) }
+  function previousAgent(_arg) { showAgentStep(-1) }
+  function showAgentStep(step) {
+    if (opened && overlayVisible) selectRelative(step)
+    else open("{}")
+  }
+
+  function selectIndex(index) {
+    if (index >= 0 && index < sortedAgents.length) selectAgent(String(sortedAgents[index].pane_id || ""))
+  }
+
+  function tokenText(tokens) {
+    if (tokens >= 1000000) return (tokens / 1000000).toFixed(tokens % 1000000 ? 1 : 0) + "M"
+    return tokens >= 1000 ? Math.round(tokens / 1000) + "k" : String(tokens)
+  }
+
+  // Context size from the agent's own session store, e.g. "372k/1M",
+  // colored by how full the window is: green < 50%, amber < 80%, red above.
+  function contextColor(agent) {
+    var tokens = Number(agent ? agent.context_tokens : 0)
+    var limit = Number(agent ? agent.context_limit : 0)
+    if (!(limit > 0)) return accent
+    var used = tokens / limit
+    return used >= 0.8 ? statusBlocked : used >= 0.5 ? statusWorking : statusIdle
+  }
+
+  function contextLabel(agent) {
+    var tokens = Number(agent ? agent.context_tokens : 0)
+    if (!isFinite(tokens) || tokens <= 0) return ""
+    var limit = Number(agent ? agent.context_limit : 0)
+    return tokenText(tokens) + (limit > 0 ? "/" + tokenText(limit) : " ctx")
+  }
+
+  function escapeHtml(text) {
+    return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
   }
 
   function isReady(agent) {
@@ -688,13 +746,54 @@ Item {
       readonly property real bubbleCurrentY: bubble.y
       readonly property real panelRoomLeft: Math.max(1, bubble.x - root.edgeGap - 12)
       readonly property real panelRoomRight: Math.max(1, width - root.edgeGap - bubble.x - bubble.width - 12)
-      readonly property bool panelOnRight: panelRoomRight >= 800
-        || (panelRoomLeft < 800 && panelRoomRight >= panelRoomLeft)
+      readonly property bool panelOnRight: panelRoomRight >= root.panelWidth
+        || (panelRoomLeft < root.panelWidth && panelRoomRight >= panelRoomLeft)
       property real rosterDragStart: 0
       property real rosterWidthStart: 0
+      property point resizeStart: Qt.point(0, 0)
+      property size resizeStartSize: Qt.size(0, 0)
+
+      // The HUD is a layer-shell overlay, so Hyprland's window resizing does
+      // not apply; these handles resize it from its outer edge and bottom.
+      function beginResize(area, mouse) {
+        resizeStart = area.mapToItem(contentItem, mouse.x, mouse.y)
+        resizeStartSize = Qt.size(panelCard.width, panelCard.height)
+      }
+
+      function updateResize(area, mouse, horizontal, vertical) {
+        var point = area.mapToItem(contentItem, mouse.x, mouse.y)
+        if (horizontal) {
+          var dx = (point.x - resizeStart.x) * (panelOnRight ? 1 : -1)
+          root.panelWidth = root.clamp(resizeStartSize.width + dx, root.minPanelWidth,
+            Math.max(root.minPanelWidth, panelOnRight ? panelRoomRight : panelRoomLeft))
+        }
+        if (vertical)
+          root.panelHeight = root.clamp(resizeStartSize.height + point.y - resizeStart.y,
+            root.minPanelHeight, Math.max(root.minPanelHeight, height - 32))
+      }
 
       function focusTerminal() {
         if (panelVisible) terminalPane.focusTerminal()
+      }
+
+      Shortcut {
+        sequence: "Alt+Down"
+        enabled: overlayWindow.panelVisible
+        onActivated: root.selectRelative(1)
+      }
+      Shortcut {
+        sequence: "Alt+Up"
+        enabled: overlayWindow.panelVisible
+        onActivated: root.selectRelative(-1)
+      }
+      Instantiator {
+        model: 9
+        delegate: Shortcut {
+          required property int index
+          sequence: "Alt+" + (index + 1)
+          enabled: overlayWindow.panelVisible
+          onActivated: root.selectIndex(index)
+        }
       }
 
       readonly property alias terminalContainer: terminalSlot
@@ -748,9 +847,9 @@ Item {
       Ui.BorderSurface {
         id: panelCard
         visible: overlayWindow.panelVisible
-        width: Math.min(800, overlayWindow.panelOnRight
+        width: Math.min(root.panelWidth, overlayWindow.panelOnRight
           ? overlayWindow.panelRoomRight : overlayWindow.panelRoomLeft)
-        height: Math.max(1, Math.min(parent.height - 32, 590))
+        height: Math.max(1, Math.min(parent.height - 32, root.panelHeight))
         x: overlayWindow.panelOnRight ? bubble.x + bubble.width + 12 : bubble.x - width - 12
         y: root.clamp(bubble.y + bubble.height / 2 - 41,
           root.edgeGap, Math.max(root.edgeGap, parent.height - height - root.edgeGap))
@@ -763,6 +862,69 @@ Item {
           anchors.fill: parent
           visible: root.wowMode
           fillColor: root.panelFill
+        }
+
+        Repeater {
+          // Outer edge, bottom edge, and the outer bottom corner.
+          model: [
+            { horizontal: true, vertical: false },
+            { horizontal: false, vertical: true },
+            { horizontal: true, vertical: true }
+          ]
+          MouseArea {
+            id: resizeHandle
+            required property var modelData
+            readonly property bool corner: modelData.horizontal && modelData.vertical
+            z: 10
+            x: modelData.horizontal ? (overlayWindow.panelOnRight ? parent.width - width : 0) : 18
+            y: modelData.vertical ? parent.height - height : 18
+            width: corner ? 24 : modelData.horizontal ? 10 : parent.width - 36
+            height: corner ? 24 : modelData.vertical ? 10 : parent.height - 36
+            hoverEnabled: true
+            cursorShape: corner ? (overlayWindow.panelOnRight ? Qt.SizeFDiagCursor : Qt.SizeBDiagCursor)
+              : modelData.horizontal ? Qt.SizeHorCursor : Qt.SizeVerCursor
+            onPressed: function(mouse) { overlayWindow.beginResize(resizeHandle, mouse) }
+            onPositionChanged: function(mouse) {
+              if (pressed) overlayWindow.updateResize(resizeHandle, mouse,
+                resizeHandle.modelData.horizontal, resizeHandle.modelData.vertical)
+            }
+            onReleased: root.saveState()
+
+            Rectangle {
+              // Light up the edge under the cursor so the handle is findable.
+              visible: !resizeHandle.corner && (resizeHandle.containsMouse || resizeHandle.pressed)
+              anchors.fill: parent
+              anchors.margins: 3
+              radius: 2
+              color: root.accent
+              opacity: 0.55
+            }
+
+            Canvas {
+              id: grip
+              // A small grip so the corner handle is discoverable.
+              visible: resizeHandle.corner
+              anchors.fill: parent
+              opacity: resizeHandle.containsMouse || resizeHandle.pressed ? 0.9 : 0.4
+              onPaint: {
+                var ctx = getContext("2d")
+                ctx.reset()
+                ctx.strokeStyle = root.accent
+                ctx.lineWidth = 1.5
+                for (var i = 1; i <= 2; i++) {
+                  var o = 6 * i
+                  ctx.beginPath()
+                  if (overlayWindow.panelOnRight) { ctx.moveTo(width - 5, height - 5 - o); ctx.lineTo(width - 5 - o, height - 5) }
+                  else { ctx.moveTo(5, height - 5 - o); ctx.lineTo(5 + o, height - 5) }
+                  ctx.stroke()
+                }
+              }
+              Connections {
+                target: overlayWindow
+                function onPanelOnRightChanged() { grip.requestPaint() }
+              }
+            }
+          }
         }
 
         ColumnLayout {
@@ -912,6 +1074,7 @@ Item {
                     delegate: Rectangle {
                       id: agentRow
                       required property var modelData
+                      required property int index
 
                       width: ListView.view.width
                       height: 86
@@ -969,7 +1132,13 @@ Item {
                           }
                           Text {
                             Layout.fillWidth: true
-                            text: root.agentName(agentRow.modelData)
+                            // Short line, so the context size isn't elided in a narrow roster.
+                            textFormat: Text.StyledText
+                            text: root.escapeHtml(root.agentName(agentRow.modelData))
+                              + (root.contextLabel(agentRow.modelData)
+                                ? " · <font color=\"" + root.contextColor(agentRow.modelData) + "\"><b>"
+                                  + root.contextLabel(agentRow.modelData) + "</b></font>"
+                                : "")
                             color: root.muted
                             font.family: root.chromeFont
                             font.pixelSize: 12
@@ -984,6 +1153,19 @@ Item {
                             font.pixelSize: 11
                             elide: Text.ElideRight
                           }
+                        }
+
+                        Text {
+                          // Matches the Alt+1-9 shortcut for this agent.
+                          visible: agentRow.index < 9
+                          Layout.alignment: Qt.AlignTop
+                          Layout.topMargin: 2
+                          text: String(agentRow.index + 1)
+                          color: root.muted
+                          opacity: 0.7
+                          font.family: root.chromeFont
+                          font.pixelSize: 11
+                          font.bold: true
                         }
                       }
                     }

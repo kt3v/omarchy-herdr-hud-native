@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded read-only Herdr metadata for the Omarchy HUD."""
+import contextlib
 import ctypes
 import json
 import os
@@ -7,9 +8,11 @@ import re
 import selectors
 import signal
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 TIMEOUT = 12
@@ -109,6 +112,7 @@ def roster() -> None:
         workspace_id = str(item.get("workspace_id", ""))
         item["workspace_label"] = labels.get(workspace_id, workspace_id or "Untitled space")
         item["tab_label"] = tab_labels.get(str(row.get("tab_id", "")), str(row.get("tab_id") or ""))
+        item["context_tokens"], item["context_limit"] = context_usage(row)
         merged.append(item)
     response({"ok": True, "agents": merged})
 
@@ -136,12 +140,237 @@ def notification_preview(text: str) -> str:
         return "…" + text[-599:].lstrip()
     return text
 
+SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+TRANSCRIPT_TAIL = 512 * 1024
+
+
+def claude_transcript(session_id: str) -> Path | None:
+    """Locate a Claude Code session log, following /resume continuations."""
+    root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+    found = None
+    for _ in range(8):
+        if not SESSION_ID.match(session_id):
+            break
+        matches = list(root.glob(f"*/{session_id}.jsonl"))
+        if not matches:
+            break
+        found = matches[0]
+        with found.open("rb") as handle:
+            handle.seek(max(0, found.stat().st_size - 4096))
+            last = handle.read().splitlines()[-1:] or [b"{}"]
+        try:
+            entry = json.loads(last[0])
+        except ValueError:
+            break
+        if entry.get("type") != "continued-in":
+            break
+        session_id = str(entry.get("continuedInSessionId", ""))
+    return found
+
+
+def claude_last_reply(session_id: str) -> str:
+    """Latest assistant text from Claude's own transcript, without touching the pane."""
+    path = claude_transcript(session_id)
+    if not path:
+        return ""
+    with path.open("rb") as handle:
+        handle.seek(max(0, path.stat().st_size - TRANSCRIPT_TAIL))
+        lines = handle.read().splitlines()
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if entry.get("type") != "assistant" or entry.get("isSidechain"):
+            continue
+        content = (entry.get("message") or {}).get("content")
+        texts = [str(p.get("text", "")) for p in content if isinstance(p, dict) and p.get("type") == "text"] \
+            if isinstance(content, list) else []
+        text = "\n".join(t for t in texts if t.strip()).strip()
+        if text:
+            return text
+    return ""
+
+
+def read_only_db(path: Path) -> sqlite3.Connection | None:
+    if not path.is_file():
+        return None
+    return sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)
+
+
+def hermes_last_reply(session_id: str) -> str:
+    """Latest Hermes assistant reply from its session database."""
+    if not re.fullmatch(r"[0-9]{8}_[0-9]{6}_[0-9a-f]+", session_id):
+        return ""
+    home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    db = read_only_db(home / "state.db")
+    if not db:
+        return ""
+    with contextlib.closing(db):
+        row = db.execute(
+            "SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' "
+            "AND content IS NOT NULL AND trim(content) != '' ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
+    return str(row[0]).strip() if row else ""
+
+
+def opencode_last_reply(session_id: str) -> str:
+    """Latest OpenCode assistant reply: the text parts of its last message."""
+    if not re.fullmatch(r"ses_[A-Za-z0-9]+", session_id):
+        return ""
+    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    db = read_only_db(data / "opencode" / "opencode.db")
+    if not db:
+        return ""
+    with contextlib.closing(db):
+        messages = db.execute(
+            "SELECT id FROM message WHERE session_id = ? AND json_extract(data, '$.role') = 'assistant' "
+            "ORDER BY time_created DESC LIMIT 5", (session_id,)).fetchall()
+        for (message_id,) in messages:
+            texts = []
+            for (raw,) in db.execute("SELECT data FROM part WHERE message_id = ? ORDER BY id", (message_id,)):
+                try:
+                    part = json.loads(raw)
+                except ValueError:
+                    continue
+                if part.get("type") == "text" and not part.get("synthetic") and not part.get("ignored"):
+                    texts.append(str(part.get("text", "")))
+            text = "\n".join(t for t in texts if t.strip()).strip()
+            if text:
+                return text
+    return ""
+
+
+CONTEXT_TAIL = 256 * 1024
+
+
+# Context windows of current Claude models (Claude Haiku 4.5 is 200K; the
+# others are 1M), keyed by model-ID prefix; first match wins.
+CLAUDE_CONTEXT_LIMITS = (("claude-haiku-4", 200_000), ("claude-", 1_000_000))
+
+
+def claude_context_limit(model: str) -> int:
+    return next((limit for prefix, limit in CLAUDE_CONTEXT_LIMITS if model.startswith(prefix)), 0)
+
+
+def claude_context(session_id: str) -> tuple[int, int]:
+    """(tokens in context as of Claude's latest reply, model context window)."""
+    path = claude_transcript(session_id)
+    if not path:
+        return 0, 0
+    with path.open("rb") as handle:
+        handle.seek(max(0, path.stat().st_size - CONTEXT_TAIL))
+        lines = handle.read().splitlines()
+    for line in reversed(lines):
+        if b'"usage"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        message = entry.get("message") or {}
+        usage = message.get("usage")
+        if entry.get("type") == "assistant" and not entry.get("isSidechain") and isinstance(usage, dict):
+            tokens = sum(int(usage.get(key) or 0) for key in
+                         ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+            return tokens, claude_context_limit(str(message.get("model") or ""))
+    return 0, 0
+
+
+def opencode_model_limit(provider: str, model: str) -> int:
+    """limit.context for a model from the user's OpenCode config files."""
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "opencode"
+    for name in ("opencode.json", "opencode.jsonc", "opencode.gateway.json"):
+        try:
+            text = (config / name).read_text()
+        except OSError:
+            continue
+        try:
+            data = json.loads(text)
+        except ValueError:
+            # Tolerate // comment lines in .jsonc.
+            try:
+                data = json.loads("\n".join(l for l in text.splitlines() if not l.lstrip().startswith("//")))
+            except ValueError:
+                continue
+        entry = ((((data.get("provider") or {}).get(provider) or {}).get("models") or {}).get(model) or {})
+        limit = (entry.get("limit") or {}).get("context") if isinstance(entry, dict) else None
+        if isinstance(limit, int) and limit > 0:
+            return limit
+    return 0
+
+
+def opencode_context(session_id: str) -> tuple[int, int]:
+    if not re.fullmatch(r"ses_[A-Za-z0-9]+", session_id):
+        return 0, 0
+    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    db = read_only_db(data / "opencode" / "opencode.db")
+    if not db:
+        return 0, 0
+    with contextlib.closing(db):
+        for (raw,) in db.execute(
+                "SELECT data FROM message WHERE session_id = ? AND json_extract(data, '$.role') = 'assistant' "
+                "ORDER BY time_created DESC LIMIT 5", (session_id,)):
+            try:
+                message = json.loads(raw)
+            except ValueError:
+                continue
+            tokens = message.get("tokens") or {}
+            cache = tokens.get("cache") or {}
+            total = int(tokens.get("input") or 0) + int(cache.get("read") or 0) + int(cache.get("write") or 0)
+            if total:
+                return total, opencode_model_limit(str(message.get("providerID") or ""), str(message.get("modelID") or ""))
+    return 0, 0
+
+
+CONTEXT_READERS = {
+    "claude": claude_context,
+    "opencode": opencode_context,
+}
+
+
+def context_usage(row: dict) -> tuple[int, int]:
+    """(context tokens, context window) for an agent; zeros when unknown."""
+    reader = CONTEXT_READERS.get(str(row.get("agent", "")))
+    session = (row.get("agent_session") or {}).get("value")
+    if not reader or not session:
+        return 0, 0
+    try:
+        return reader(str(session))
+    except (OSError, ValueError, sqlite3.Error):
+        return 0, 0
+
+
+# Agents whose replies can be read from their own session store, so alerts
+# can show a preview without reading (or scrolling) the live pane.
+SESSION_READERS = {
+    "claude": claude_last_reply,
+    "hermes": hermes_last_reply,
+    "opencode": opencode_last_reply,
+}
+
+
 def preview(pane_id: str, terminal_id: str) -> None:
+    rows = []
+
     def matches():
-        return any(row.get("pane_id") == pane_id and row.get("terminal_id") == terminal_id for row in agents())
+        rows[:] = agents()
+        return any(row.get("pane_id") == pane_id and row.get("terminal_id") == terminal_id for row in rows)
     if pane_id.startswith("-") or not re.fullmatch(r"term_[A-Za-z0-9_-]+", terminal_id) or not matches():
         raise BridgeError("The selected agent changed")
-    text = herdr("agent", "read", pane_id, "--source", "recent-unwrapped", "--lines", "12")
+    row = next(r for r in rows if r.get("pane_id") == pane_id)
+    session = (row.get("agent_session") or {}).get("value")
+    reader = SESSION_READERS.get(str(row.get("agent", "")))
+    if reader and session:
+        try:
+            text = reader(str(session))
+        except (OSError, sqlite3.Error):
+            text = ""
+        if text:
+            response({"preview": notification_preview(re.sub(r"[*`#]", "", text))})
+            return
+    # Visible screen only: alternate-screen agents (Claude Code) expose
+    # scrollback by scrolling the live pane, which the user would see.
+    text = herdr("agent", "read", pane_id, "--source", "visible")
     if not matches():
         raise BridgeError("The selected agent changed")
     response({"preview": notification_preview(text)})

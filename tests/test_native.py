@@ -26,13 +26,38 @@ def module(name):
 class NativeTests(unittest.TestCase):
     def test_attach_execs_only_explicit_target(self):
         attach = module("herdr-attach")
-        with patch.object(attach.shutil, "which", return_value="/usr/bin/herdr"), patch.object(attach.os, "execv") as execute:
+        with patch.object(attach.shutil, "which", return_value="/usr/bin/herdr"), patch.object(attach.os, "execv") as execute, \
+                patch.object(attach, "scroll_config", return_value=None):
             attach.main(["attach", "term_safe"])
             execute.assert_called_once_with("/usr/bin/herdr", ["/usr/bin/herdr", "terminal", "attach", "term_safe"])
             for target in ("--takeover", "w1:p1", "term_x;touch /tmp/unsafe", ""):
                 with self.assertRaises(ValueError):
                     attach.main(["attach", target])
             self.assertEqual(execute.call_count, 1)
+
+    def test_attach_uses_hud_only_one_line_scroll_config(self):
+        attach = module("herdr-attach")
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERDR_CONFIG_PATH", None)
+            home = Path(directory)
+            user = home / ".config/herdr/config.toml"
+            user.parent.mkdir(parents=True)
+            cases = {
+                "[keys]\nprefix = \"ctrl+b\"\n\n[ui]\nmouse_capture = true\n": "[ui]\nmouse_scroll_lines = 1\nmouse_capture = true",
+                "[ui]\n# mouse_scroll_lines = 3\nmouse_scroll_lines = 5\n": "mouse_scroll_lines = 1",
+                "[keys]\nprefix = \"ctrl+b\"\n": "[ui]\nmouse_scroll_lines = 1",
+            }
+            for original, expected in cases.items():
+                user.write_text(original)
+                path = attach.scroll_config(home)
+                self.assertEqual(path, home / ".config/herdr-hud-native/herdr-attach.toml")
+                self.assertIn(expected, path.read_text())
+                self.assertNotIn("mouse_scroll_lines = 5", path.read_text())
+                self.assertEqual(user.read_text(), original)
+            with patch.object(attach.shutil, "which", return_value="/usr/bin/herdr"), \
+                    patch.object(attach.os, "execv"), patch.object(attach.Path, "home", return_value=home):
+                attach.main(["attach", "term_safe"])
+                self.assertEqual(os.environ["HERDR_CONFIG_PATH"], str(home / ".config/herdr-hud-native/herdr-attach.toml"))
 
     def test_missing_herdr_never_execs_shell(self):
         attach = module("herdr-attach")
@@ -96,6 +121,116 @@ class NativeTests(unittest.TestCase):
             monitor.preview("w1:p1", "term_safe")
         self.assertEqual(json.loads(output.getvalue()), {"preview": ""})
 
+    def test_claude_preview_reads_transcript_not_pane(self):
+        monitor = module("herdr-monitor")
+        first, second = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
+        agent = {"pane_id": "w1:p1", "terminal_id": "term_safe", "agent": "claude",
+                 "agent_session": {"value": first}}
+        entries = [
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Older reply"}]}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Fixed the **build**."},
+                                                          {"type": "tool_use", "name": "Bash"}]}},
+            {"type": "assistant", "isSidechain": True, "message": {"content": [{"type": "text", "text": "subagent"}]}},
+        ]
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": directory}):
+            project = Path(directory) / "projects" / "-repo"
+            project.mkdir(parents=True)
+            (project / f"{first}.jsonl").write_text(json.dumps({"type": "continued-in", "continuedInSessionId": second}) + "\n")
+            (project / f"{second}.jsonl").write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+            with patch.object(monitor, "agents", return_value=[agent]), \
+                    patch.object(monitor, "herdr") as herdr, contextlib.redirect_stdout(output):
+                monitor.preview("w1:p1", "term_safe")
+            herdr.assert_not_called()
+            self.assertIsNone(monitor.claude_transcript("../../etc/passwd"))
+        self.assertEqual(json.loads(output.getvalue()), {"preview": "Fixed the build."})
+
+    def test_hermes_and_opencode_previews_read_session_stores(self):
+        import sqlite3
+        monitor = module("herdr-monitor")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hermes = root / "hermes"
+            hermes.mkdir()
+            db = sqlite3.connect(hermes / "state.db")
+            db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT)")
+            db.executemany("INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)", [
+                ("20261005_225026_cdc9cb", "assistant", "Older reply"),
+                ("20261005_225026_cdc9cb", "assistant", "Theme applied."),
+                ("20261005_225026_cdc9cb", "tool", "tool output"),
+                ("20261005_225026_cdc9cb", "assistant", ""),
+                ("20261005_000000_ffffff", "assistant", "Other session"),
+            ])
+            db.commit(); db.close()
+            data = root / "data"
+            (data / "opencode").mkdir(parents=True)
+            db = sqlite3.connect(data / "opencode" / "opencode.db")
+            db.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)")
+            db.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, data TEXT)")
+            db.executemany("INSERT INTO message VALUES (?, ?, ?, ?)", [
+                ("msg_1", "ses_abc", 1, json.dumps({"role": "assistant"})),
+                ("msg_2", "ses_abc", 2, json.dumps({"role": "assistant"})),
+                ("msg_3", "ses_abc", 3, json.dumps({"role": "user"})),
+            ])
+            db.executemany("INSERT INTO part VALUES (?, ?, ?)", [
+                ("prt_1", "msg_1", json.dumps({"type": "text", "text": "Old"})),
+                ("prt_2", "msg_2", json.dumps({"type": "reasoning", "text": "secret"})),
+                ("prt_3", "msg_2", json.dumps({"type": "text", "text": "Fixed it."})),
+                ("prt_4", "msg_2", json.dumps({"type": "text", "text": "hidden", "synthetic": True})),
+            ])
+            db.commit(); db.close()
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes), "XDG_DATA_HOME": str(data)}):
+                self.assertEqual(monitor.hermes_last_reply("20261005_225026_cdc9cb"), "Theme applied.")
+                self.assertEqual(monitor.opencode_last_reply("ses_abc"), "Fixed it.")
+                self.assertEqual(monitor.hermes_last_reply("../../etc"), "")
+                self.assertEqual(monitor.opencode_last_reply("ses_x' OR 1=1--"), "")
+                agent = {"pane_id": "w1:p1", "terminal_id": "term_safe", "agent": "opencode",
+                         "agent_session": {"value": "ses_abc"}}
+                output = io.StringIO()
+                with patch.object(monitor, "agents", return_value=[agent]), \
+                        patch.object(monitor, "herdr") as herdr, contextlib.redirect_stdout(output):
+                    monitor.preview("w1:p1", "term_safe")
+                herdr.assert_not_called()
+                self.assertEqual(json.loads(output.getvalue()), {"preview": "Fixed it."})
+            with patch.dict(os.environ, {"HERMES_HOME": str(root / "missing"), "XDG_DATA_HOME": str(root / "missing")}):
+                self.assertEqual(monitor.hermes_last_reply("20261005_225026_cdc9cb"), "")
+                self.assertEqual(monitor.opencode_last_reply("ses_abc"), "")
+
+    def test_context_tokens_for_claude_and_opencode(self):
+        import sqlite3
+        monitor = module("herdr-monitor")
+        session = "33333333-3333-3333-3333-333333333333"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "claude" / "projects" / "-repo"
+            project.mkdir(parents=True)
+            usage = lambda n: {"input_tokens": 2, "cache_creation_input_tokens": 8, "cache_read_input_tokens": n}
+            (project / f"{session}.jsonl").write_text("\n".join(json.dumps(e) for e in [
+                {"type": "assistant", "message": {"usage": usage(100)}},
+                {"type": "assistant", "message": {"model": "claude-opus-5-5", "usage": usage(5000)}},
+                {"type": "assistant", "isSidechain": True, "message": {"usage": usage(9)}},
+                {"type": "user", "message": {"content": "next"}},
+            ]) + "\n")
+            (root / "data" / "opencode").mkdir(parents=True)
+            db = sqlite3.connect(root / "data" / "opencode" / "opencode.db")
+            db.execute("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
+            db.execute("INSERT INTO message VALUES ('m', 'ses_abc', 1, ?)", (json.dumps(
+                {"role": "assistant", "providerID": "local", "modelID": "qwen",
+                 "tokens": {"input": 10, "cache": {"read": 200, "write": 5}}}),))
+            db.commit(); db.close()
+            (root / "config" / "opencode").mkdir(parents=True)
+            (root / "config" / "opencode" / "opencode.jsonc").write_text(
+                '// comment\n{"provider": {"local": {"models": {"qwen": {"limit": {"context": 261120}}}}}}')
+            env = {"CLAUDE_CONFIG_DIR": str(root / "claude"), "XDG_DATA_HOME": str(root / "data"),
+                   "XDG_CONFIG_HOME": str(root / "config")}
+            with patch.dict(os.environ, env):
+                self.assertEqual(monitor.context_usage({"agent": "claude", "agent_session": {"value": session}}), (5010, 1_000_000))
+                self.assertEqual(monitor.context_usage({"agent": "opencode", "agent_session": {"value": "ses_abc"}}), (215, 261120))
+                self.assertEqual(monitor.context_usage({"agent": "hermes", "agent_session": {"value": "x"}}), (0, 0))
+                self.assertEqual(monitor.context_usage({"agent": "claude"}), (0, 0))
+                self.assertEqual(monitor.claude_context_limit("claude-haiku-4-5"), 200_000)
+                self.assertEqual(monitor.claude_context_limit("gpt-5"), 0)
+
     def test_read_only_roster(self):
         monitor = module("herdr-monitor")
         payloads = [{"result": {"agents": [{"pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "t1"}]}},
@@ -123,6 +258,12 @@ class NativeTests(unittest.TestCase):
         self.assertIn("WowLauncher {", source)
         self.assertIn("root.queueAlert(agent)", source)
         self.assertNotIn("QMLTermWidget", source)
+
+    def test_roster_keeps_herdr_order(self):
+        # Re-sorting by attention moved agents under the cursor on selection.
+        source = (NATIVE / "HerdrHud.qml").read_text()
+        self.assertIn("readonly property var sortedAgents: agents\n", source)
+        self.assertNotIn("Roster.sorted(", source)
 
     def test_release_structure(self):
         for name in ("Roster.js", "Alerts.js", "WowFrame.qml", "WowLauncher.qml", "LICENSE"):
